@@ -1,0 +1,7 @@
+auth_info/
+service-account-key.json
+node_modules/
+*.log
+qr.png
+Link
+

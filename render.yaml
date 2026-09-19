@@ -1,0 +1,17 @@
+services:
+  - type: web
+    name: spt-whatsapp-gateway
+    runtime: node
+    plan: free
+    region: singapore
+    buildCommand: npm install
+    startCommand: node worker.js
+    healthCheckPath: /health
+    envVars:
+      - key: PORT
+        value: 10000
+      - key: NODE_ENV
+        value: production
+      - key: FIREBASE_SERVICE_ACCOUNT
+        sync: false
+

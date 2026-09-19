@@ -1,0 +1,26 @@
+{
+  "name": "spt-whatsapp-worker",
+  "version": "1.0.0",
+  "description": "Zero-Cost Secure Firestore Queue WhatsApp Worker for SPT Distribution",
+  "main": "worker.js",
+  "scripts": {
+    "start": "node worker.js",
+    "dev": "node --watch worker.js"
+  },
+  "dependencies": {
+    "@whiskeysockets/baileys": "^6.7.9",
+    "firebase-admin": "^13.0.0",
+    "pino": "^9.6.0",
+    "qrcode": "^1.5.4",
+    "qrcode-terminal": "^0.12.0"
+  },
+  "keywords": [
+    "whatsapp",
+    "baileys",
+    "firestore-queue",
+    "spt-distribution",
+    "erp"
+  ],
+  "author": "SPT Distribution",
+  "license": "MIT"
+}
