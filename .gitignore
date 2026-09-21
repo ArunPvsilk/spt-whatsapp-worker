@@ -1,5 +1,6 @@
 auth_info/
 service-account-key.json
+render_env_value.txt
 node_modules/
 *.log
 qr.png
