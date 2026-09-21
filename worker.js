@@ -303,6 +303,8 @@ async function updateGatewayStatus(fields) {
   try {
     await db.collection('whatsapp_gateway').doc('status').set({
       workerHost: os.hostname(),
+      gatewayType: 'cloud',
+      cloudProvider: 'render.com',
       updatedAt: admin.firestore.FieldValue.serverTimestamp(),
       lastHeartbeat: admin.firestore.FieldValue.serverTimestamp(),
       ...fields,
@@ -319,6 +321,8 @@ function startHeartbeat() {
     try {
       await db.collection('whatsapp_gateway').doc('status').set({
         workerHost: os.hostname(),
+        gatewayType: 'cloud',
+        cloudProvider: 'render.com',
         lastHeartbeat: admin.firestore.FieldValue.serverTimestamp(),
         status: isConnected ? 'connected' : (isConnecting ? 'connecting' : 'disconnected'),
       }, { merge: true });
@@ -839,6 +843,24 @@ function startHealthServer() {
   });
 }
 
+// ── 7c. Render Cloud Keep-Alive Self-Pinger (Prevents Inactivity Sleep) ──────
+let keepAliveTimer = null;
+function startKeepAlive() {
+  const url = process.env.RENDER_EXTERNAL_URL || 'https://spt-whatsapp-gateway-ms51.onrender.com';
+  if (!url) return;
+  console.log(`⏱️  [Keep-Alive] Self-ping active for ${url} (every 8 minutes)`);
+  if (keepAliveTimer) clearInterval(keepAliveTimer);
+  keepAliveTimer = setInterval(async () => {
+    try {
+      const pingUrl = `${url.replace(/\/$/, '')}/health`;
+      const res = await fetch(pingUrl);
+      console.log(`💓 [Keep-Alive] Self-ping status: ${res.status}`);
+    } catch (e) {
+      console.warn('⚠️  [Keep-Alive] Ping failed:', e.message);
+    }
+  }, 8 * 60 * 1000);
+}
+
 // ── 8. Graceful Shutdown ────────────────────────────────────────────────────
 function setupGracefulShutdown() {
   const shutdown = async () => {
@@ -889,6 +911,7 @@ async function main() {
 
   setupGracefulShutdown();
   startHealthServer();
+  startKeepAlive();
   startConfigListener();
   startHeartbeat();
   startControlListener();
