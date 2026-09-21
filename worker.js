@@ -442,12 +442,65 @@ async function connectToWhatsApp() {
       }
     });
 
-    // Listen to delivery and read receipts
+    // Helper to update outbox document with receipt status, with retry to handle race conditions
+    async function updateOutboxReceipt(waId, deliveryStatus) {
+      if (!waId || !deliveryStatus) return;
+      for (let attempt = 0; attempt < 3; attempt++) {
+        try {
+          const snap = await db.collection('whatsapp_outbox')
+            .where('whatsappMessageId', '==', waId)
+            .limit(1)
+            .get();
+
+          if (!snap.empty) {
+            const doc = snap.docs[0];
+            const currentData = doc.data() || {};
+            // Never downgrade 'read' to 'delivered'
+            if (currentData.deliveryStatus === 'read' && deliveryStatus === 'delivered') {
+              return;
+            }
+
+            const updateData = {
+              deliveryStatus,
+              ...(deliveryStatus === 'delivered' ? { deliveredAt: admin.firestore.FieldValue.serverTimestamp() } : {}),
+              ...(deliveryStatus === 'read' ? { readAt: admin.firestore.FieldValue.serverTimestamp() } : {}),
+            };
+            await doc.ref.update(updateData);
+            console.log(`📬 [Receipt] Message ${doc.id} (WA ID: ${waId}) updated to "${deliveryStatus}"`);
+
+            // Record audit entry in whatsapp_logs
+            try {
+              await db.collection('whatsapp_logs').add({
+                outboxId: doc.id,
+                recipientPhone: currentData.recipientPhone || currentData.phone,
+                triggerType: currentData.triggerType || currentData.trigger,
+                referenceId: currentData.referenceId || doc.id,
+                event: `RECEIPT_${deliveryStatus.toUpperCase()}`,
+                deliveryStatus,
+                whatsappMessageId: waId,
+                timestamp: admin.firestore.FieldValue.serverTimestamp(),
+                source: 'spt-whatsapp-worker',
+                workerHost: os.hostname(),
+              });
+            } catch (_) {}
+
+            return;
+          }
+        } catch (rcptErr) {
+          console.warn(`⚠️ [Receipt] Error updating receipt for ${waId}:`, rcptErr.message);
+        }
+        if (attempt < 2) {
+          await new Promise((r) => setTimeout(r, 600));
+        }
+      }
+    }
+
+    // Listen to delivery and read receipts (status updates)
     sock.ev.on('messages.update', async (updates) => {
       for (const update of updates) {
         const waId = update.key?.id;
         const statusNum = update.update?.status;
-        if (!waId || !statusNum) continue;
+        if (!waId || statusNum == null) continue;
 
         // Baileys status: 3 = DELIVERY_ACK (delivered), 4 = READ (read/seen), 5 = PLAYED
         let deliveryStatus = null;
@@ -455,24 +508,26 @@ async function connectToWhatsApp() {
         else if (statusNum === 4 || statusNum === 5) deliveryStatus = 'read';
 
         if (deliveryStatus) {
-          try {
-            const snap = await db.collection('whatsapp_outbox')
-              .where('whatsappMessageId', '==', waId)
-              .limit(1)
-              .get();
-            if (!snap.empty) {
-              const doc = snap.docs[0];
-              const updateData = {
-                deliveryStatus,
-                ...(deliveryStatus === 'delivered' ? { deliveredAt: admin.firestore.FieldValue.serverTimestamp() } : {}),
-                ...(deliveryStatus === 'read' ? { readAt: admin.firestore.FieldValue.serverTimestamp() } : {}),
-              };
-              await doc.ref.update(updateData);
-              console.log(`📬 [Receipt] Message ${doc.id} updated to "${deliveryStatus}"`);
-            }
-          } catch (rcptErr) {
-            // Non-critical receipt update failure
-          }
+          await updateOutboxReceipt(waId, deliveryStatus);
+        }
+      }
+    });
+
+    // Listen to user receipts (multi-device, read receipts, and batched updates)
+    sock.ev.on('message-receipt.update', async (receipts) => {
+      for (const item of receipts) {
+        const waId = item.key?.id;
+        if (!waId) continue;
+        const receipt = item.receipt;
+        let deliveryStatus = null;
+        if (receipt?.readTimestamp) {
+          deliveryStatus = 'read';
+        } else if (receipt?.receiptTimestamp) {
+          deliveryStatus = 'delivered';
+        }
+
+        if (deliveryStatus) {
+          await updateOutboxReceipt(waId, deliveryStatus);
         }
       }
     });
@@ -716,12 +771,22 @@ async function processOutboxItem(docId, initialData) {
     const waMessageId = result?.key?.id || null;
 
     // Step D: Mark as Sent in Firestore
+    // Check if deliveryStatus was already updated by a fast incoming receipt to avoid overwriting
+    let initialDeliveryStatus = 'sent';
+    try {
+      const currentDocSnap = await docRef.get();
+      const currentDocData = currentDocSnap.data() || {};
+      if (currentDocData.deliveryStatus === 'delivered' || currentDocData.deliveryStatus === 'read') {
+        initialDeliveryStatus = currentDocData.deliveryStatus;
+      }
+    } catch (_) {}
+
     await docRef.update({
       status: 'sent',
       attempts,
       whatsappMessageId: waMessageId,
       sentAt: admin.firestore.FieldValue.serverTimestamp(),
-      deliveryStatus: 'sent',
+      deliveryStatus: initialDeliveryStatus,
       error: null,
     });
 
